@@ -1,0 +1,217 @@
+---
+title: "rock_bayesian_linear_regression"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+options(warn=-1)
+library(ggplot2)
+library(GGally)
+suppressMessages(library(dplyr))
+library(BAS)
+suppressMessages(library(MASS))
+```
+
+
+## Bayesian linear regression on the R swiss dataset
+
+The swiss dataset contains 47 observations on 6 variables. Each sample is a province in Switzerland and we are given the fertility measure, % of males involved in an agriculture occupation, % of draftees receiving the highest mark on an army examination, % of education beyond primary school for draftees, and % catholic. The data is from the year 1888 by the way. We'll use bayesian linear regression to model the fertility of the population.
+
+### Data
+
+```{r}
+ggpairs(swiss)
+```
+
+### OLS
+
+For OLS we model $y$ as a function of $x_1$, $x_2$, ... and solve for the parameters $\beta_0$, $\beta_1$, $\beta_2$,... by minimizing the least squares objective function. The resulting equation is $y = \beta_0 + \beta_1\cdot x_1 + ...$.
+
+```{r}
+swiss.lm_full = lm(formula = Fertility ~ ., data = swiss)
+
+predict = data.frame(predict(swiss.lm_full))
+predict$x = swiss$Agriculture
+names(predict) = c('y', 'x')
+
+ggplot() + geom_point(data = swiss, aes(Agriculture, Fertility, pointsize=3)) +  geom_line(data = predict, aes(x=x, y=y, color ='red'), size=1.2)
+```
+
+Expecting the line of best fit to be stright? Remember that we are fitting a model with 5 features so we would need 5-dimensioal space to illustrate the linear hyperplane. Since none of us have 5-dimensions lying around we'll just have to trust the math on this one. By now you may have already realized that the plot above is not even valid because we are simply drawing lines between predicted points. The figure should look like this:
+
+```{r}
+ggplot() + geom_point(data = swiss, aes(Agriculture, Fertility, pointsize=3)) +  geom_point(data = predict, aes(x=x, y=y, color ='red'), size=1.7)
+```
+
+where we are not predending to predict in between the lines. This is a terrable thing to look at and can better be interpreted as a residual plot.
+
+```{r}
+ggplot() + geom_point(data = swiss, aes(Agriculture, resid(swiss.lm_full), pointsize=3, color='red')) + geom_hline(aes(yintercept=0))
+```
+
+When doing Bayesian regression a powerfull tool is Bayesian model averaging. This is where a set of models are trained on different combinations of features and combined in some way to make predictions. As a predule to this, we'll run a function that attempts to minimize a metric called BIC (the Bayesian Information Criterion).
+
+```{r}
+stepAIC(lm(Fertility ~., data = swiss), k=log(nrow(rock)))
+```
+
+As can be seen, the BIC is lower after removing the "Examination"" feature but can not be further lowered by removing any of the remaining features.
+
+### Bayesian linear regression
+
+In bayesian linear regression we write a similar equation:
+$y_i = \beta_0 + \beta_1\cdot x_{1,i} + ... + \epsilon_i$ where $i$ represents the sample number and $\epsilon_i$ is the error of each sample. By rearanging, we could calculate $\epsilon_i$ for a given sample by evaluating $y_i - (\beta_0 + \beta_1\cdot x_{1,i} + ...)$. The error $\epsilon$ is assumed to be normally distributed with mean of 0. Before revealing how the parameters $\beta_0$, $\beta_1$, ... are determined (along with the standard deviaiton of the error function normal distribution), let's pause to consider this assumption about the errors.
+
+Solving for each $\epsilon_i$ and plotting the distribution.
+
+```{r}
+errors = swiss$Fertility - predict$y
+as.data.frame(errors) %>% ggplot(aes(errors)) + geom_histogram(binwidth=1.5)
+```
+
+```{r}
+as.data.frame(errors) %>% ggplot(aes(errors)) + geom_histogram(binwidth=1.5, aes(y=..density..)) + geom_density(adjust=1.2, size=1, color='red') + xlim(-20, 20)
+```
+
+
+In Bayesian regression we assign prior probability distributions to the parameters $\beta_0$, $\beta_1$, ... and the standard deviaiton of the error function normal distribution $\sigma^2$. This can be done in such a way that ensures the resulting posterior distributions have means equal to the OLS optimized coefficieints. Hence our coefficients will have the same values as the OLS approach (but we'll have access to confidence intervals which encode more detailed infomration about the data compared to the standard deviation of OLS - not totally sure about this)
+
+Aside:
+One choice of prior distribution called the Jeffreys prior can be written in terms of the likelihood function. This likelihood should represent the marginal probability of our data occuring. If we use a binomial function for the likelihood then the Jeffreys prior will evalue to Beta(1/2, 1/2) [1](https://eventuallyalmosteverywhere.wordpress.com/2013/05/10/bayesian-inference-and-the-jeffreys-prior/).
+
+```{r}
+x = seq(0.01, 0.99, 0.01)
+qplot(x, dbeta(x, 0.5, 0.5), geom = 'line') + ggtitle('Beta(0.5, 0.5) distribution')
+```
+
+The posteriors for each parameter generally need to be calculated using the data and bayes rule (which requires a likelihood function). Using conjugacy, which occurs when the prior and posterior distributions are defined buy the same function with different parameters, we can simply update the parameters using a given rule instead of performing integral calculations.
+
+Once we have calcualte the posterior distribution we can set the parameters are we see fit. Our choice should depend on the loss function we wish to minimize. For linear loss (like OLS) we should take the mean and for a quadratic loss we should take the median. 
+
+To model our problem we'll use the BAS library to evaluate a set of models containing different combinations of features and make predictions based on these.
+
+```{r}
+swiss.lm_bay = bas.lm(Fertility ~ ., data = swiss, prior = 'BIC', modelprior = uniform())
+swiss.lm_bay
+```
+
+Just like our linear models earlier, we feed in all of the features using the dot (.) and specify "Fertility" for prediction. 
+
+The prior distributions for each $\beta$ parameter are defined according the the BIC criteria. Let's not worry about these just yet and turn our attention to the probabilities of the models.
+
+The prior distribution for the models is uniform, as can be confimed with the following code:
+
+```{r}
+swiss.lm_bay$priorprobs
+```
+
+These are updated to:
+
+```{r}
+swiss.lm_bay$postprobs
+```
+
+which can be illustrated using the image function.
+
+```{r}
+image(swiss.lm_bay, rotate=FALSE)
+```
+
+Here we see the models ranked by their posterior odds ratio. The features are all quite good and, just like our stepAIC linear model feature reduction earlier, "Examination" can be identified as a poor feautre for making predictions about fertility.
+
+For a more quantified summary of the top models we can do:
+
+```{r}
+summary.bas(swiss.lm_bay)
+```
+
+This gives access to the posterior probability of each model side-by-side with the $R^2$ values. Notice how the model with the largest $R^2$ does not have the largest probability!
+
+As promised, we'll now return to the parameter probabilities. I don't exactly understand how the priors are set (http://stats.stackexchange.com/questions/234096/what-is-the-bic-prior-for-bayesian-linear-regression) when using the argument "BIC" for the prior variable in the bas.lm() call. The wiki page for BIC states that it's derived under assumptions that allow for an appoximation of the likelihood function multiplied by the prior probability. Perhaps this approximation is used, in which case the prior probability distribution need not be explicitly defined to determine the posterior (i.e. when using Bayes' rule).
+
+In any case, and regardless of the prior distribution, we can easily plot the posterior distributions of the $\beta$ coefficients for each feature. The code below uses the model averaging approach to calculate the distributions
+
+```{r}
+par(mfrow = c(1,2))
+plot(coefficients(swiss.lm_bay))
+```
+
+Notice how our weakest feature, "Examination", has a large overlap with 0. This overlap is quantified by the height of the black vertical line extending up from x=0 in each plot.
+
+### Predicting with BAS
+
+Since we didn't hold out any data during training, we have nothing to test our model on. Let's swiftly fix that by breaking our dataframe into training and testing pieces:
+
+```{r}
+set.seed(1)
+n = nrow(swiss)
+train = sample(1:n, size = round(0.6*n), replace=FALSE)
+swiss.train = swiss[train,]
+swiss.test = swiss[-train,]
+```
+
+and training a new set of models:
+
+```{r}
+swiss.lm_bay = bas.lm(Fertility ~ ., data = swiss.train, prior = 'BIC', modelprior = uniform())
+swiss.lm_bay
+```
+
+Finally, we can compare the performance of some aggregated models that will include:     - BMA: Bayesian Model Averaging (mean of best models)   
+ - BPM: Bayesian Posterior Model (best predictave model according to some loss function e.g., squared error)   
+ - MPM: Median Probability Model (including all predictors whose marginal probabilities of being non zero are above 50%)   
+ - HPM: Highest Probability Model   
+ 
+```{r}
+results = matrix(NA, ncol=4, nrow=1)
+colnames(results) = c('BMA', 'BPM', 'MPM', 'HPM')
+
+for (name in colnames(results)) {
+  y_pred = predict(swiss.lm_bay, swiss.test, estimator=name)$fit
+  results[1, name] = cv.summary.bas(y_pred, swiss.test$Fertility)
+}
+
+options(digits = 4)
+results
+```
+
+In each case the performance is similar, with the BMA model appearing to be the best and BPM the worst. Unfortunately we can not trust these results because they depend too much on the training / testing data allocation. To make sure we can trust these results we need to do K-fold cross validation, as seen below.
+
+```{r}
+set.seed(99)
+results = matrix(NA, ncol=4, nrow=10)
+colnames(results) = c('BMA', 'BPM', 'MPM', 'HPM')
+
+for (i in 1:10) {
+  n = nrow(swiss)
+  train = sample(1:n, size = round(0.6*n), replace=FALSE)
+  swiss.train = swiss[train,]
+  swiss.test = swiss[-train,]
+  swiss.lm_bay = bas.lm(Fertility ~ ., data = swiss.train, prior = 'BIC', modelprior = uniform())
+  
+  for (name in colnames(results)) {
+    y_pred = predict(swiss.lm_bay, swiss.test, estimator=name)$fit
+    results[i, name] = cv.summary.bas(y_pred, swiss.test$Fertility)
+  }
+}
+
+boxplot(results)
+
+apply(results, 2, mean)
+```
+
+Now we can see that each method performs equally well within the calculated error bounds.
+
+If your still reading this perhaps you are dedicated enough to take on a homework task of comparing results with different priors for the parameters or models. What happens when you run K-fold cross validation with the substitution below?
+
+```{r}
+swiss.lm_bay = bas.lm(Fertility ~ ., data = swiss.train, prior = 'g-prior', modelprior = beta.binomial(1,1))
+```
+
+
+
